@@ -28,7 +28,7 @@ typedef enum {
     BF_LOOP_END,
 }bf_opcode;
 
-// 1 byte opcode + 2 bytes offset in case of loop
+// 1 byte opcode + 2 bytes for jump destination on loop ends
 #define BF_MAX_OPCODE_SIZE (3)
 
 u16 bracket_skip_forward(u8* buf, u32 pos, u32 bufsize) {
@@ -73,6 +73,53 @@ bf_opcode bf_char_to_opcode(char c) {
     }
 }
 
+u8* compile_bf_bytecode(u8* bf_buf, u32 size, u32* bytecode_size_out) {
+    const u32 bytecode_buf_size = size * BF_MAX_OPCODE_SIZE;
+    u8* bytecode_buf = calloc(1, bytecode_buf_size);
+    if (!bytecode_buf) {
+        return NULL;
+    }
+
+    vfile vf = vfile_open(bytecode_buf, bytecode_buf_size);
+    u32 bytecode_pos = 0;
+    for (u32 i = 0; i < size; i++) {
+        const char c = bf_buf[i];
+        const u8 opcode = bf_char_to_opcode(c);
+
+        VFILE_WRITE(u8, &vf, opcode);
+        if (opcode == BF_LOOP_START || opcode == BF_LOOP_END) {
+            vfile_seek(&vf, sizeof(u16));
+        }
+    }
+    vf.size = vf.pos - 1;
+    vf.pos = 0;
+
+    while (!vfile_eof(vf)) {
+        const bf_opcode opcode = VFILE_READ(u8, &vf);
+
+        if (opcode != BF_LOOP_START) {
+            continue;
+        }
+        const u16 pos = bracket_skip_forward(vf.ptr, vf.pos, vf.size);
+        if (pos == vf.size) {
+            LOG_MSG(error, "Couldn't find matching loop bracket!\n");
+            vfile_seek(&vf, sizeof(u16));
+            continue;
+        }
+
+        const u16 cur_pos = vf.pos;
+        const u16 target_pos = pos;
+        s16* cur_ptr = (s16*)(vf.ptr + cur_pos);
+        s16* target_ptr = (s16*)(vf.ptr + target_pos);
+
+        *cur_ptr = target_pos + sizeof(u16);
+        *target_ptr = cur_pos + sizeof(u16);
+    }
+
+    *bytecode_size_out = vf.size;
+    return bytecode_buf;
+}
+
 void exec_bf_bytecode(u8* buf, u32 size) {
     bf_state state = {0};
     u32 bytecode_pos = 0;
@@ -101,26 +148,19 @@ void exec_bf_bytecode(u8* buf, u32 size) {
             }
             break;
         }
+        case BF_LOOP_END:
         case BF_LOOP_START: {
-            if (state.cells[state.idx] != 0) {
-                bytecode_pos += 2;
-                break;
-            }
             const s16 old_pos = bytecode_pos;
-            const s16 new_pos = *(s16*)&buf[bytecode_pos];
-            bytecode_pos = new_pos;
-
-            break;
-        }
-        case BF_LOOP_END: {
+            s16 new_pos = *(s16*)&buf[bytecode_pos];
             if (state.cells[state.idx] == 0) {
-                bytecode_pos += 2;
-                break;
+                if (opcode == BF_LOOP_END) {
+                    new_pos = old_pos + 2;
+                }
+            } else if (opcode == BF_LOOP_START) {
+                new_pos = old_pos + 2;
             }
-            const s16 old_pos = bytecode_pos;
-            const s16 new_pos = *(s16*)&buf[bytecode_pos];
-            bytecode_pos = new_pos;
 
+            bytecode_pos = new_pos;
             break;
         }
         default:
@@ -137,68 +177,17 @@ int main(int argc, char** argv) {
     }
 
     const char* path = argv[1];
-    if (!file_exists(path)) {
+    const u32 size = file_size(path);
+    u8* bf_buf = file_load(path);
+    if (!bf_buf) {
         return EXIT_FAILURE;
     }
 
-    const u32 size = file_size(path);
-    u8* bf_buf = file_load(path);
-    const u32 bytecode_buf_size = size * BF_MAX_OPCODE_SIZE;
-    u8* bytecode_buf = calloc(1, bytecode_buf_size);
-
-    bf_state state = {0};
-    int result = EXIT_FAILURE;
-    if (!bf_buf || !bytecode_buf) {
-        goto exit;
-    }
-
-    vfile vf = vfile_open(bytecode_buf, bytecode_buf_size);
-    u32 bytecode_pos = 0;
-    for (u32 i = 0; i < size; i++) {
-        const char c = bf_buf[i];
-        const u8 opcode = bf_char_to_opcode(c);
-
-        VFILE_WRITE(u8, &vf, opcode);
-        if (opcode == BF_LOOP_START || opcode == BF_LOOP_END) {
-            vfile_seek(&vf, sizeof(u16));
-        }
-    }
-    vf.size = vf.pos;
-    vf.pos = 0;
-
-    while (!vfile_eof(vf)) {
-        const bf_opcode opcode = VFILE_READ(u8, &vf);
-
-        if (opcode != BF_LOOP_START) {
-            continue;
-        }
-        const u16 pos = bracket_skip_forward(vf.ptr, vf.pos, vf.size);
-        if (pos == vf.size) {
-            LOG_MSG(error, "Couldn't find matching loop bracket!\n");
-            vfile_seek(&vf, sizeof(u16));
-            continue;
-        }
-
-        LOG_MSG(info, "Bracket @ 0x%x matches one @ 0x%x!\n", vf.pos - 1, pos);
-        const s16 offset = (s16)pos - (s16)vf.pos;
-        const u16 cur_pos = vf.pos;
-        const u16 target_pos = pos;
-
-        s16* cur_ptr = (s16*)(vf.ptr + cur_pos);
-        s16* target_ptr = (s16*)(vf.ptr + target_pos);
-
-        *cur_ptr = target_pos + sizeof(u16);
-        *target_ptr = cur_pos + sizeof(u16);
-        printf("source points -> 0x%x, target points -> 0x%x\n", *cur_ptr, *target_ptr);
-    }
-
-    exec_bf_bytecode(bytecode_buf, vf.size);
-
-exit:
-    result = EXIT_SUCCESS;
-exit_fail:
+    u32 bytecode_buf_size = 0;
+    u8* bytecode_buf = compile_bf_bytecode(bf_buf, size, &bytecode_buf_size);
     free(bf_buf);
-    free(bytecode_buf);
 
-    return result;
+    exec_bf_bytecode(bytecode_buf, bytecode_buf_size);
+    free(bytecode_buf);
+    return EXIT_SUCCESS;
 }
