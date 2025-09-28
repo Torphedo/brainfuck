@@ -93,7 +93,7 @@ u8* compile_bf_bytecode(const u8* bf_buf, u32 size, u32* bytecode_size_out) {
             vfile_seek(&vf, sizeof(u16));
         }
     }
-    vf.size = vf.pos - 1;
+    vf.size = vf.pos;
     vf.pos = 0;
 
     while (!vfile_eof(vf)) {
@@ -122,10 +122,69 @@ u8* compile_bf_bytecode(const u8* bf_buf, u32 size, u32* bytecode_size_out) {
     return bytecode_buf;
 }
 
+u8* load_bf_bytecode(const char* path, u32* bytecode_size_out) {
+    const s64 size = file_size(path);
+    const u32 min_size = sizeof(bf_header) + 1; // Header + an opcode
+    if (size < min_size) {
+        LOG_MSG(error, "'%s' is too small to be BF bytecode (only %d bytes, should be at least %d)\n", size, min_size);
+        return NULL;
+    }
+
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        return NULL;
+    }
+
+    u8* buf = NULL;
+    bf_header header = {0};
+    fread(&header, sizeof(header), 1, f);
+    if (header.magic != BF_MAGIC) {
+        goto exit;
+    }
+
+    if (header.version > BF_LATEST_VERSION) {
+        LOG_MSG(error, "BF bytecode file is too new (v%d), I only support up to v%d!\n", header.version, BF_LATEST_VERSION);
+        goto exit;
+    }
+
+    const u32 size_left = size - sizeof(bf_header);
+    if (header.size > size_left) {
+        LOG_MSG(error, "Header says there's %d bytes of bytecode, but there's only %d bytes of room in the file!\n", header.size, size_left);
+        goto exit;
+    }
+
+    buf = calloc(1, header.size);
+    if (buf) {
+        fread(buf, header.size, 1, f);
+        *bytecode_size_out = header.size;
+    }
+
+exit:
+    fclose(f);
+    return buf;
+}
+
+bool save_bf_bytecode(const char* path, u8* buf, u32 size) {
+    const bf_header header = {
+        .magic = BF_MAGIC,
+        .version = BF_LATEST_VERSION,
+        .size = size,
+    };
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        return false;
+    }
+    fwrite(&header, sizeof(header), 1, f);
+    fwrite(buf, size, 1, f);
+    fclose(f);
+
+    return true;
+}
+
 void exec_bf_bytecode(const u8* buf, u32 size) {
     bf_state state = {0};
     u32 bytecode_pos = 0;
-    while (bytecode_pos < size + 1) {
+    while (bytecode_pos < size) {
         const bf_opcode opcode = buf[bytecode_pos++];
         switch (opcode) {
         case BF_POS_INC:
