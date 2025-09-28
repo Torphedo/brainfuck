@@ -2,10 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "int.h"
-#include "file.h"
-#include "logging.h"
-#include "vfile.h"
+#include <common/int.h>
+#include <common/file.h>
+#include <common/logging.h>
+#include <common/vfile.h>
 
 enum {
     BF_CELL_COUNT = UINT16_MAX,
