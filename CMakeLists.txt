@@ -7,7 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
 
 add_subdirectory(lib/bobtail)
 add_executable(bfc
-    main.c
-    bf.c
+    src/main.c
+    src/bf.c
 )
 target_link_libraries(bfc PRIVATE bobtail)
